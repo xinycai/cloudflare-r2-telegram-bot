@@ -206,9 +206,7 @@ async function sendMessage(chatId, text, apiUrl) {
     });
 }
 
-async function setWebhook(webhookUrl, apiUrl
-
-) {
+async function setWebhook(webhookUrl, apiUrl) {
     const response = await fetch(`${apiUrl}/setWebhook`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},

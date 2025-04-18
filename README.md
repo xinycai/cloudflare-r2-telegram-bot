@@ -58,6 +58,9 @@ export default {
         // 获取用户的当前路径
         async function getUserPath(chatId) {
             const path = await env.INDEXES_KV.get(chatId.toString());
+            if (path == '/'){
+                return '';
+            }
             return path || ''; // 默认为空字符串，对应根路径
         }
 

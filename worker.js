@@ -12,17 +12,29 @@ export default {
         const TELEGRAM_API_URL = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}`;
         const url = new URL(request.url);
 
+        // 获取用户的当前路径
+        async function getUserPath(chatId) {
+            const path = await env.INDEXES_KV.get(chatId.toString());
+            return path || ''; // 默认为空字符串，对应根路径
+        }
+
+        // 设置用户的路径
+        async function setUserPath(chatId, path) {
+            await env.INDEXES_KV.put(chatId.toString(), path);
+        }
+
         async function handleMediaUpload(chatId, fileId, isDocument = false) {
             try {
                 await sendMessage(chatId, '收到文件，正在上传ing', TELEGRAM_API_URL);
 
                 const fileUrl = await getFileUrl(fileId, TELEGRAM_BOT_TOKEN);
-                const uploadResult = await uploadImageToR2(fileUrl, env[BUCKET_NAME], isDocument);
+                const userPath = await getUserPath(chatId);
+                const uploadResult = await uploadImageToR2(fileUrl, env[BUCKET_NAME], isDocument, userPath);
 
                 if (uploadResult.ok) {
                     const imageUrl = `${BASE_URL}/${uploadResult.key}`;
-                    let mes = `✅ 图片上传成功！\n直链\n${imageUrl}\nMarkdown\n![img](${imageUrl})`;
-                    await sendMessage(chatId, mes, TELEGRAM_API_URL);
+                    const caption = `✅ 图片上传成功！\n直链\n<code>${imageUrl}</code>\nMarkdown\n<code>![img](${imageUrl})</code>`;
+                    await sendPhoto(chatId, imageUrl, TELEGRAM_API_URL, caption, { parse_mode: "HTML" });
                 } else {
                     await sendMessage(chatId, uploadResult.message, TELEGRAM_API_URL);
                 }
@@ -32,7 +44,7 @@ export default {
             }
         }
 
-        async function uploadImageToR2(imageUrl, bucket, isDocument = false) {
+        async function uploadImageToR2(imageUrl, bucket, isDocument = false, userPath = '') {
             try {
                 const response = await fetch(imageUrl);
                 if (!response.ok) throw new Error('下载文件失败');
@@ -51,7 +63,14 @@ export default {
                 const date = new Date();
                 const formattedDate = `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}${String(date.getDate()).padStart(2, '0')}`;
                 const shortUUID = crypto.randomUUID().split('-')[0];
-                const key = `${formattedDate}_${shortUUID}.${detectedType.ext}`;
+                
+                // 构建文件路径，添加用户指定的路径前缀
+                let key = `${formattedDate}_${shortUUID}.${detectedType.ext}`;
+                if (userPath) {
+                    // 确保路径格式正确（末尾有斜杠）
+                    const formattedPath = userPath.endsWith('/') ? userPath : `${userPath}/`;
+                    key = `${formattedPath}${key}`;
+                }
 
                 await bucket.put(key, buffer, {
                     httpMetadata: {
@@ -82,6 +101,7 @@ export default {
 
         if (url.pathname === '/webhook' && request.method === 'POST') {
             try {
+                console.log("1");
                 const update = await request.json();
 
                 if (!update.message) return new Response('OK');
@@ -91,9 +111,35 @@ export default {
                 if (!CHAT_ID.includes(chatId.toString())) {
                     return new Response('Unauthorized access', { status: 403 });
                 }
+                console.log(update);
                 // 处理文本消息
                 if (update.message.text) {
-                    await sendMessage(chatId, '请发给我一张图片', TELEGRAM_API_URL);
+                    const text = update.message.text.trim();
+                    
+                    // 处理 /modify 命令
+                    if (text.startsWith('/modify')) {
+                        const parts = text.split(' ');
+                        if (parts.length >= 2) {
+                            const newPath = parts[1].trim();
+                            await setUserPath(chatId, newPath);
+                            await sendMessage(chatId, `修改路径为${newPath}`, TELEGRAM_API_URL);
+                        } else {
+                            await sendMessage(chatId, '请指定路径，例如：/modify blog', TELEGRAM_API_URL);
+                        }
+                        return new Response('OK');
+                    }
+                    
+                    // 处理 /status 命令
+                    if (text === '/status') {
+                        const currentPath = await getUserPath(chatId);
+                        const statusMessage = currentPath ? `当前路径: ${currentPath}` : '当前路径: / (默认)';
+                        await sendMessage(chatId, statusMessage, TELEGRAM_API_URL);
+                        return new Response('OK');
+                    }
+
+                    let mes = `请发送一张图片！\n或者使用以下命令：\n/modify 修改上传图片的存储路径\n/status 查看当前上传图片的路径`;
+                    
+                    await sendMessage(chatId, mes, TELEGRAM_API_URL);
                     return new Response('OK');
                 }
 
@@ -158,20 +204,35 @@ async function getFileUrl(fileId, botToken) {
     return `https://api.telegram.org/file/bot${botToken}/${data.result.file_path}`;
 }
 
-async function sendMessage(chatId, text, apiUrl) {
+async function sendMessage(chatId, text, apiUrl, options = {}) {
     await fetch(`${apiUrl}/sendMessage`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
             chat_id: chatId,
             text: text,
+            ...options
         }),
     });
 }
 
-async function setWebhook(webhookUrl, apiUrl
+async function sendPhoto(chatId, photoUrl, apiUrl, caption = "", options = {}) {
+    const response = await fetch(`${apiUrl}/sendPhoto`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            chat_id: chatId,
+            photo: photoUrl,
+            caption: caption,
+            ...options
+        }),
+    });
+    return await response.json();
+}
 
-) {
+async function setWebhook(webhookUrl, apiUrl) {
     const response = await fetch(`${apiUrl}/setWebhook`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
